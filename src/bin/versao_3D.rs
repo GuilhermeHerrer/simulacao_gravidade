@@ -1,5 +1,6 @@
-use macroquad::{prelude::*};
+use macroquad::prelude::*;
 const GRAV: f32 = 6.6743e-11 / 100f32; // Constante da Gravitação Universal
+const VEL_LUZ: f32 = 299_792_458.; // Velocidade da luz
 
 struct Objeto {
     raio: f32,
@@ -7,6 +8,7 @@ struct Objeto {
     massa: f32,
     cor: Color,
     vel: Vec3,
+    rs: f32,
 }
 
 struct CameraPos {
@@ -58,11 +60,21 @@ impl Objeto {
             massa,
             cor,
             vel,
+            rs: (2. * GRAV * massa) / (VEL_LUZ * VEL_LUZ) * 100000., // Calcular raio de Schwarzschild.
         }
     }
 
-    fn desenhar_esfera(&self) {
-        draw_sphere(self.centro, self.raio, None, self.cor);
+    fn desenhar_esfera(&self, objetos: &[Objeto]) {
+        draw_sphere(
+            vec3(
+                self.centro.x,
+                self.centro.y,
+                calcular_z(objetos, self.centro.x, self.centro.y),
+            ),
+            self.raio,
+            None,
+            self.cor,
+        );
     }
 
     fn acelerar(&mut self, accs: Vec3) {
@@ -89,16 +101,14 @@ impl Objeto {
         let g_forca = (GRAV * self.massa * outro.massa) / (distancia * distancia);
 
         // Aceleração em x, aceleração em y e em z
-        Vec3::new
-        (
+        Vec3::new(
             (g_forca * per_x) / self.massa,
             (g_forca * per_y) / self.massa,
             (g_forca * per_z) / self.massa,
         )
     }
 
-
-    fn checar_colisao(&self, outro: &Objeto) -> Option<(Vec3, Vec3)>{
+    fn checar_colisao(&self, outro: &Objeto) -> Option<(Vec3, Vec3)> {
         let distancia = self.centro.distance(outro.centro);
         let soma_dos_raios = self.raio + outro.raio;
         if distancia <= soma_dos_raios {
@@ -108,20 +118,58 @@ impl Objeto {
     }
 }
 
+fn calcular_z(objetos: &[Objeto], x: f32, y: f32) -> f32 {
+    // Distorção total em Z no objeto atual.
+    let mut z_total = 0.;
 
-fn desenhar_grid(espacamento: f32, comprimento: f32) {
-    draw_line_3d(vec3(0., comprimento, 0.), vec3(0., -comprimento, 0.), WHITE);
-    draw_line_3d(vec3(comprimento, 0., 0.), vec3(-comprimento, 0., 0.), WHITE);
+    for obj in objetos {
+        // Pitagoras básico para conseguir a distancia r.
+        let dx = x - obj.centro.x;
+        let dy = y - obj.centro.y;
+        let r = (dx * dx + dy * dy).sqrt();
 
-    let quantidade = (comprimento / espacamento) as i32;
+        // Logica para não dar NaN.
+        if r > obj.rs {
+            let z_objeto = 2.0 * (obj.rs * (r - obj.rs)).sqrt();
+            z_total += z_objeto;
+        } else {
+            z_total += 2.0 * obj.rs;
+        }
+    }
 
-    for n in 0..=quantidade {
-        let distancia = n as f32 * espacamento;
+    z_total
+}
 
-        draw_line_3d(vec3(distancia, comprimento, 0.), vec3(distancia, -comprimento, 0.), WHITE);
-        draw_line_3d(vec3(comprimento, distancia, 0.), vec3(-comprimento, distancia, 0.), WHITE);
-        draw_line_3d(vec3(-distancia, comprimento, 0.), vec3(-distancia, -comprimento, 0.), WHITE);
-        draw_line_3d(vec3(comprimento, -distancia, 0.), vec3(-comprimento, -distancia, 0.), WHITE);
+fn desenhar_grid(espacamento: f32, comprimento: f32, objetos: &[Objeto]) {
+    // Ve a quantidade de linhas horizontais/verticais seram necessarias para cobrir tudo.
+    let quant_linhas = ((comprimento * 2.0) / espacamento) as i32;
+
+    for i in 0..=quant_linhas {
+        for n in 0..=quant_linhas {
+            // Valor atual em x e em y (separados para ser mais facil de mandar para o calcular_z);
+            let x = -comprimento + (i as f32 * espacamento);
+            let y = -comprimento + (n as f32 * espacamento);
+
+            // Proximo valor de x e y (Serve para poder fazer os passos tambem, já que é necessario, por exemplo, o ponto x atual
+            // representado pelo x sozinho, e o proximo valor dele para desenhar a linha fazendo pequenos avanços.) e o min impede
+            // que se desenhe algo fora dos limites da grid.
+            let prox_x = (x + espacamento).min(comprimento);
+            let prox_y = (y + espacamento).min(comprimento);
+
+            // Logica para não desenhar linhas redudantes.
+            if x < comprimento {
+                //é necessario dois Zs já que a linha é feita de dois nodes.
+                let z1 = calcular_z(objetos, x, y);
+                let z2 = calcular_z(objetos, prox_x, y);
+                draw_line_3d(vec3(x, y, z1), vec3(prox_x, y, z2), GRAY);
+            }
+
+            if y < comprimento {
+                let z1 = calcular_z(objetos, x, y);
+                let z2 = calcular_z(objetos, x, prox_y);
+                draw_line_3d(vec3(x, y, z1), vec3(x, prox_y, z2), GRAY);
+            }
+        }
     }
 }
 
@@ -130,28 +178,48 @@ async fn main() {
     let mut camera = CameraPos::novo(0., 800., 0.);
     let mut objetos = vec![
         Objeto::novo(Vec3::ZERO, Vec3::ZERO, 15.97e24, RED, 100.),
-        Objeto::novo(vec3(0., 0.75, 0.75), Vec3 { x: 500., y: 0., z: 0. }, 7.35e22, BLUE, 50.),
-        Objeto::novo(vec3(0., -0.75, -0.75), Vec3 { x: -600., y: 0., z: 250. }, 7.35e22, GREEN, 25.)
-        ];
+        Objeto::novo(
+            vec3(0., 1., 0.),
+            Vec3 {
+                x: 500.,
+                y: 0.,
+                z: 0.,
+            },
+            7.35e22,
+            BLUE,
+            50.,
+        ),
+        Objeto::novo(
+            vec3(0., -0.75, 0.),
+            Vec3 {
+                x: -600.,
+                y: 0.,
+                z: 0.,
+            },
+            7.35e22,
+            GREEN,
+            25.,
+        ),
+    ];
     loop {
         clear_background(BLACK);
-        desenhar_grid(50., 1000.);
+        desenhar_grid(50., 1000., &objetos);
         camera.atualizar_camera_pos();
 
-        for p in 0..objetos.len(){
-            for n in (1 + p)..objetos.len(){
+        for p in 0..objetos.len() {
+            for n in (1 + p)..objetos.len() {
                 let accs_p: Vec3 = objetos[p].calcular_gforce(&objetos[n]);
                 let accs_n: Vec3 = objetos[n].calcular_gforce(&objetos[p]);
 
                 objetos[p].acelerar(accs_p);
                 objetos[n].acelerar(accs_n);
 
-                if let Some((vel_p, vel_n)) = objetos[p].checar_colisao(&objetos[n]){
+                if let Some((vel_p, vel_n)) = objetos[p].checar_colisao(&objetos[n]) {
                     objetos[p].vel = vel_p;
                     objetos[n].vel = vel_n;
                 }
             }
-            objetos[p].desenhar_esfera();
+            objetos[p].desenhar_esfera(&objetos);
             objetos[p].atualizar_pos();
         }
 
